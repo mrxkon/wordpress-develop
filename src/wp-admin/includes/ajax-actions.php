@@ -3698,7 +3698,7 @@ function wp_ajax_parse_embed() {
 		$mce_styles = wpview_media_sandbox_styles();
 
 		foreach ( $mce_styles as $style ) {
-			$styles .= sprintf( '<link rel="stylesheet" href="%s"/>', $style );
+			$styles .= sprintf( '<link rel="stylesheet" href="%s" />', $style );
 		}
 
 		$html = do_shortcode( $parsed );
@@ -5429,10 +5429,10 @@ function wp_ajax_send_password_reset() {
 
 	if ( true === $results ) {
 		wp_send_json_success(
-			/* translators: 1: User's display name. */
+			/* translators: %s: User's display name. */
 			sprintf( __( 'A password reset link was emailed to %s.' ), $user->display_name )
 		);
 	} else {
-		wp_send_json_error( $results );
+		wp_send_json_error( $results->get_error_message() );
 	}
 }

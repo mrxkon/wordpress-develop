@@ -50,6 +50,21 @@ class WP_Site_Health {
 
 		add_action( 'admin_enqueue_scripts', array( $this, 'enqueue_scripts' ) );
 		add_action( 'wp_site_health_scheduled_check', array( $this, 'wp_cron_scheduled_check' ) );
+
+		add_action( 'site_health_tab_content', array( $this, 'show_site_health_tab' ) );
+	}
+
+	/**
+	 * Output the content of a tab in the Site Health screen.
+	 *
+	 * @since 5.8.0
+	 *
+	 * @param string $tab Slug of the current tab being displayed.
+	 */
+	public function show_site_health_tab( $tab ) {
+		if ( 'debug' === $tab ) {
+			require_once ABSPATH . '/wp-admin/site-health-info.php';
+		}
 	}
 
 	/**
@@ -103,7 +118,7 @@ class WP_Site_Health {
 			$health_check_js_variables['site_status']['issues'] = $issue_counts;
 		}
 
-		if ( 'site-health' === $screen->id && ! isset( $_GET['tab'] ) ) {
+		if ( 'site-health' === $screen->id && ( ! isset( $_GET['tab'] ) || empty( $_GET['tab'] ) ) ) {
 			$tests = WP_Site_Health::get_tests();
 
 			// Don't run https test on development environments.
@@ -1528,7 +1543,7 @@ class WP_Site_Health {
 		if ( ! wp_is_using_https() ) {
 			// If the website is not using HTTPS, provide more information about whether it is supported and how it can
 			// be enabled.
-			$result['status'] = 'critical';
+			$result['status'] = 'recommended';
 			$result['label']  = __( 'Your website does not use HTTPS' );
 
 			if ( wp_is_site_url_using_https() ) {
@@ -1630,36 +1645,6 @@ class WP_Site_Health {
 					);
 				}
 			}
-		} elseif ( ! wp_is_https_supported() ) {
-			// If the website is using HTTPS, but HTTPS is actually not supported, inform the user about the potential
-			// problems.
-			$result['status'] = 'critical';
-			$result['label']  = __( 'There are problems with the HTTPS connection of your website' );
-
-			$https_detection_errors = get_option( 'https_detection_errors' );
-			if ( ! empty( $https_detection_errors['ssl_verification_failed'] ) ) {
-				$result['description'] = sprintf(
-					'<p>%s</p>',
-					sprintf(
-						/* translators: %s: URL to Settings > General > WordPress Address. */
-						__( 'Your <a href="%s">WordPress Address</a> is set up to use HTTPS, but the SSL certificate appears to be invalid.' ),
-						esc_url( admin_url( 'options-general.php' ) . '#siteurl' )
-					)
-				);
-			} else {
-				$result['description'] = sprintf(
-					'<p>%s</p>',
-					sprintf(
-						/* translators: %s: URL to Settings > General > WordPress Address. */
-						__( 'Your <a href="%s">WordPress Address</a> is set up to use HTTPS, but your website appears to be unavailable when using an HTTPS connection.' ),
-						esc_url( admin_url( 'options-general.php' ) . '#siteurl' )
-					)
-				);
-			}
-			$result['description'] .= sprintf(
-				'<p>%s</p>',
-				__( 'Talk to your web host about resolving this HTTPS issue for your website.' )
-			);
 		}
 
 		return $result;
@@ -2176,16 +2161,30 @@ class WP_Site_Health {
 				'post_max_size',
 				'upload_max_filesize'
 			);
-			$result['status']      = 'recommended';
-			$result['description'] = sprintf(
-				'<p>%s</p>',
-				sprintf(
-					/* translators: 1: post_max_size, 2: upload_max_filesize */
-					__( 'The setting for %1$s is smaller than %2$s, this could cause some problems when trying to upload files.' ),
-					'<code>post_max_size</code>',
-					'<code>upload_max_filesize</code>'
-				)
-			);
+			$result['status'] = 'recommended';
+
+			if ( 0 === wp_convert_hr_to_bytes( $post_max_size ) ) {
+				$result['description'] = sprintf(
+					'<p>%s</p>',
+					sprintf(
+						/* translators: 1: post_max_size, 2: upload_max_filesize */
+						__( 'The setting for %1$s is currently configured as 0, this could cause some problems when trying to upload files through plugin or theme features that rely on various upload methods. It is recommended to configure this setting to a fixed value, ideally matching the value of %2$s, as some upload methods read the value 0 as either unlimited, or disabled.' ),
+						'<code>post_max_size</code>',
+						'<code>upload_max_filesize</code>'
+					)
+				);
+			} else {
+				$result['description'] = sprintf(
+					'<p>%s</p>',
+					sprintf(
+						/* translators: 1: post_max_size, 2: upload_max_filesize */
+						__( 'The setting for %1$s is smaller than %2$s, this could cause some problems when trying to upload files.' ),
+						'<code>post_max_size</code>',
+						'<code>upload_max_filesize</code>'
+					)
+				);
+			}
+
 			return $result;
 		}
 
@@ -2633,6 +2632,7 @@ class WP_Site_Health {
 	 * @return object The test results.
 	 */
 	function can_perform_loopback() {
+		$body    = array( 'site-health' => 'loopback-test' );
 		$cookies = wp_unslash( $_COOKIE );
 		$timeout = 10;
 		$headers = array(
@@ -2646,9 +2646,19 @@ class WP_Site_Health {
 			$headers['Authorization'] = 'Basic ' . base64_encode( wp_unslash( $_SERVER['PHP_AUTH_USER'] ) . ':' . wp_unslash( $_SERVER['PHP_AUTH_PW'] ) );
 		}
 
-		$url = site_url();
+		$url = site_url( 'wp-cron.php' );
 
-		$r = wp_remote_get( $url, compact( 'cookies', 'headers', 'timeout', 'sslverify' ) );
+		/*
+		 * A post request is used for the wp-cron.php loopback test to cause the file
+		 * to finish early without triggering cron jobs. This has two benefits:
+		 * - cron jobs are not triggered a second time on the site health page,
+		 * - the loopback request finishes sooner providing a quicker result.
+		 *
+		 * Using a POST request causes the loopback to differ slightly to the standard
+		 * GET request WordPress uses for wp-cron.php loopback requests but is close
+		 * enough. See https://core.trac.wordpress.org/ticket/52547
+		 */
+		$r = wp_remote_post( $url, compact( 'body', 'cookies', 'headers', 'timeout', 'sslverify' ) );
 
 		if ( is_wp_error( $r ) ) {
 			return (object) array(

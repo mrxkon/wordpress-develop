@@ -149,7 +149,7 @@ function wp_authenticate_username_password( $user, $username, $password ) {
 	if ( ! $user ) {
 		return new WP_Error(
 			'invalid_username',
-			__( 'Unknown username. Check again or try your email address.' )
+			__( '<strong>Error</strong>: Unknown username. Check again or try your email address.' )
 		);
 	}
 
@@ -347,12 +347,12 @@ function wp_authenticate_application_password( $input_user, $username, $password
 		if ( is_email( $username ) ) {
 			$error = new WP_Error(
 				'invalid_email',
-				__( 'Unknown email address. Check again or try your username.' )
+				__( '<strong>Error</strong>: Unknown email address. Check again or try your username.' )
 			);
 		} else {
 			$error = new WP_Error(
 				'invalid_username',
-				__( 'Unknown username. Check again or try your email address.' )
+				__( '<strong>Error</strong>: Unknown username. Check again or try your email address.' )
 			);
 		}
 	} elseif ( ! wp_is_application_passwords_available() ) {
@@ -1008,10 +1008,12 @@ function delete_user_meta( $user_id, $meta_key, $meta_value = '' ) {
  * @param string $key     Optional. The meta key to retrieve. By default,
  *                        returns data for all keys.
  * @param bool   $single  Optional. Whether to return a single value.
- *                        This parameter has no effect if $key is not specified.
+ *                        This parameter has no effect if `$key` is not specified.
  *                        Default false.
- * @return mixed An array if $single is false. The value of meta data field
- *               if $single is true. False for an invalid $user_id.
+ * @return mixed An array of values if `$single` is false.
+ *               The value of meta data field if `$single` is true.
+ *               False for an invalid `$user_id` (non-numeric, zero, or negative value).
+ *               An empty string if a valid but non-existing user ID is passed.
  */
 function get_user_meta( $user_id, $key = '', $single = false ) {
 	return get_metadata( 'user', $user_id, $key, $single );
@@ -2749,6 +2751,11 @@ function retrieve_password( $user_login = null ) {
 		return $key;
 	}
 
+	// Localize password reset message content for user.
+	$locale = get_user_locale( $user_data );
+
+	$switched_locale = switch_to_locale( $locale );
+
 	if ( is_multisite() ) {
 		$site_name = get_network()->site_name;
 	} else {
@@ -2768,13 +2775,15 @@ function retrieve_password( $user_login = null ) {
 	$message .= __( 'To reset your password, visit the following address:' ) . "\r\n\r\n";
 	$message .= network_site_url( "wp-login.php?action=rp&key=$key&login=" . rawurlencode( $user_login ), 'login' ) . "\r\n\r\n";
 
-	$requester_ip = $_SERVER['REMOTE_ADDR'];
-	if ( $requester_ip ) {
-		$message .= sprintf(
-			/* translators: %s: IP address of password reset requester. */
-			__( 'This password reset request originated from the IP address %s.' ),
-			$requester_ip
-		) . "\r\n";
+	if ( ! is_user_logged_in() ) {
+		$requester_ip = $_SERVER['REMOTE_ADDR'];
+		if ( $requester_ip ) {
+			$message .= sprintf(
+				/* translators: %s: IP address of password reset requester. */
+				__( 'This password reset request originated from the IP address %s.' ),
+				$requester_ip
+			) . "\r\n";
+		}
 	}
 
 	/* translators: Password reset notification email subject. %s: Site title. */
@@ -2806,6 +2815,10 @@ function retrieve_password( $user_login = null ) {
 	 * @param WP_User $user_data  WP_User object.
 	 */
 	$message = apply_filters( 'retrieve_password_message', $message, $key, $user_login, $user_data );
+
+	if ( $switched_locale ) {
+		restore_previous_locale();
+	}
 
 	if ( $message && ! wp_mail( $user_email, wp_specialchars_decode( $title ), $message ) ) {
 		$errors->add(
@@ -3936,18 +3949,17 @@ function _wp_privacy_account_request_confirmed_message( $request_id ) {
  * users on the site, or guests without a user account.
  *
  * @since 4.9.6
- * @since 5.7.0 Added the `$send_confirmation_email` parameter.
+ * @since 5.7.0 Added the `$status` parameter.
  *
  * @param string $email_address           User email address. This can be the address of a registered
  *                                        or non-registered user.
  * @param string $action_name             Name of the action that is being confirmed. Required.
  * @param array  $request_data            Misc data you want to send with the verification request and pass
  *                                        to the actions once the request is confirmed.
- * @param bool   $send_confirmation_email Optional. If false, the request status is set to 'Completed' directly.
- *                                        Default true.
+ * @param string $status                  Optional request status (pending or confirmed). Default 'pending'.
  * @return int|WP_Error                   Returns the request ID if successful, or a WP_Error object on failure.
  */
-function wp_create_user_request( $email_address = '', $action_name = '', $request_data = array(), $send_confirmation_email = true ) {
+function wp_create_user_request( $email_address = '', $action_name = '', $request_data = array(), $status = 'pending' ) {
 	$email_address = sanitize_email( $email_address );
 	$action_name   = sanitize_key( $action_name );
 
@@ -3957,6 +3969,10 @@ function wp_create_user_request( $email_address = '', $action_name = '', $reques
 
 	if ( ! in_array( $action_name, _wp_privacy_action_request_types(), true ) ) {
 		return new WP_Error( 'invalid_action', __( 'Invalid action name.' ) );
+	}
+
+	if ( ! in_array( $status, array( 'pending', 'confirmed' ), true ) ) {
+		return new WP_Error( 'invalid_status', __( 'Invalid request status.' ) );
 	}
 
 	$user    = get_user_by( 'email', $email_address );
@@ -3980,19 +3996,13 @@ function wp_create_user_request( $email_address = '', $action_name = '', $reques
 		return new WP_Error( 'duplicate_request', __( 'An incomplete personal data request for this email address already exists.' ) );
 	}
 
-	if ( false !== $send_confirmation_email ) {
-		$status = 'request-pending';
-	} else {
-		$status = 'request-completed';
-	}
-
 	$request_id = wp_insert_post(
 		array(
 			'post_author'   => $user_id,
 			'post_name'     => $action_name,
 			'post_title'    => $email_address,
 			'post_content'  => wp_json_encode( $request_data ),
-			'post_status'   => $status,
+			'post_status'   => 'request-' . $status,
 			'post_type'     => 'user_request',
 			'post_date'     => current_time( 'mysql', false ),
 			'post_date_gmt' => current_time( 'mysql', true ),

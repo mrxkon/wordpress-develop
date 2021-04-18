@@ -1199,7 +1199,7 @@ class WP_Test_REST_Posts_Controller extends WP_Test_REST_Post_Type_Controller_Te
 		$data     = $response->get_data();
 
 		$this->assertCount( 1, $data );
-		$this->assertEquals( $post_ids[0], $data[0]['id'] );
+		$this->assertSame( $post_ids[0], $data[0]['id'] );
 	}
 
 	/**
@@ -1818,6 +1818,32 @@ class WP_Test_REST_Posts_Controller extends WP_Test_REST_Post_Type_Controller_Te
 		$response = rest_get_server()->dispatch( $request );
 
 		$this->assertErrorResponse( 'rest_forbidden', $response, 401 );
+	}
+
+	public function test_get_post_draft_edit_context() {
+		$post_content = 'Hello World!';
+		$this->factory->post->create(
+			array(
+				'post_title'    => 'Hola',
+				'post_password' => 'password',
+				'post_content'  => $post_content,
+				'post_excerpt'  => $post_content,
+				'post_author'   => self::$editor_id,
+			)
+		);
+		$draft_id = $this->factory->post->create(
+			array(
+				'post_status'  => 'draft',
+				'post_author'  => self::$contributor_id,
+				'post_content' => '<!-- wp:latest-posts {"displayPostContent":true} /--> <!-- wp:latest-posts {"displayPostContent":true,"displayPostContentRadio":"full_post"} /-->',
+			)
+		);
+		wp_set_current_user( self::$contributor_id );
+		$request = new WP_REST_Request( 'GET', sprintf( '/wp/v2/posts/%d', $draft_id ) );
+		$request->set_param( 'context', 'edit' );
+		$response = rest_get_server()->dispatch( $request );
+		$data     = $response->get_data();
+		$this->assertNotContains( $post_content, $data['content']['rendered'] );
 	}
 
 	public function test_get_post_invalid_id() {
@@ -5088,13 +5114,10 @@ class WP_Test_REST_Posts_Controller extends WP_Test_REST_Post_Type_Controller_Te
 	}
 
 	public function tearDown() {
-		_unregister_post_type( 'private-post' );
-		_unregister_post_type( 'youseeme' );
 		if ( isset( $this->attachment_id ) ) {
 			$this->remove_added_uploads();
 		}
-		remove_filter( 'rest_pre_dispatch', array( $this, 'wpSetUpBeforeRequest' ), 10, 3 );
-		remove_filter( 'posts_clauses', array( $this, 'save_posts_clauses' ), 10, 2 );
+
 		parent::tearDown();
 	}
 
